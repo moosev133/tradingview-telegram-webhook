@@ -1,16 +1,22 @@
 from flask import Flask, request
 import requests
-import os
 
 app = Flask(__name__)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+BOT_TOKEN = "new bot token: 8796444971:AAHGIrUfngVr6uUwaz-2N29KGmZZ1icCt0A"
+CHAT_ID = "804976011"
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=data)
+
+    data = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
+
+    response = requests.post(url, data=data)
+
+    print(response.text)
 
 @app.route("/", methods=["GET"])
 def home():
@@ -19,9 +25,12 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
-    message = data.get("message", str(data))
+
+    message = data.get("message", "No message")
+
     send_telegram(message)
+
     return {"status": "ok"}
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=5000)
