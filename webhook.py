@@ -8,7 +8,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Get values from .env
+# Get values from environment
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -23,7 +23,9 @@ def send_telegram(message):
 
     response = requests.post(url, data=data)
 
-    print(response.text)
+    print("Telegram response:", response.text)
+
+    return response.text
 
 
 @app.route("/", methods=["GET"])
@@ -31,6 +33,18 @@ def home():
     return "Webhook is running"
 
 
+# TEST ROUTE
+@app.route("/test", methods=["GET"])
+def test():
+    result = send_telegram("✅ Test message from Render")
+
+    return {
+        "status": "test sent",
+        "telegram_response": result
+    }
+
+
+# WEBHOOK ROUTE
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
@@ -39,9 +53,12 @@ def webhook():
 
     message = data.get("message", "No message")
 
-    send_telegram(message)
+    result = send_telegram(message)
 
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "telegram_response": result
+    }
 
 
 if __name__ == "__main__":
