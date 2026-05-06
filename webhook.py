@@ -3,7 +3,7 @@ import requests
 
 app = Flask(__name__)
 
-BOT_TOKEN = "new bot token: 8796444971:AAHGIrUfngVr6uUwaz-2N29KGmZZ1icCt0A"
+BOT_TOKEN = "8796444971:AAHGIrUfngVr6uUwaz-2N29KGmZZ1icCt0A"
 CHAT_ID = "804976011"
 
 def send_telegram(message):
