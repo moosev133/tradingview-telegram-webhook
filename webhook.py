@@ -13,6 +13,16 @@ CHAT_ID = os.getenv("CHAT_ID")
 SCALPING_BOT_TOKEN = os.getenv("SCALPING_BOT_TOKEN")
 SCALPING_CHAT_ID = os.getenv("SCALPING_CHAT_ID")
 
+AUTOBOT_SWING_URL = os.getenv(
+    "AUTOBOT_SWING_URL",
+    "http://184.174.35.98:5050/autobot/webhook"
+)
+
+AUTOBOT_SCALPING_URL = os.getenv(
+    "AUTOBOT_SCALPING_URL",
+    "http://184.174.35.98:5050/autobot/webhook_scalping"
+)
+
 
 def send_telegram(message, bot_token, chat_id):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -22,10 +32,30 @@ def send_telegram(message, bot_token, chat_id):
         "text": message
     }
 
-    response = requests.post(url, data=data)
+    response = requests.post(url, data=data, timeout=10)
     print("Telegram response:", response.text)
 
     return response.text
+
+
+def forward_to_autobot(data, url):
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        print("AutoBot response:", response.text)
+
+        return {
+            "success": True,
+            "status_code": response.status_code,
+            "response": response.text
+        }
+
+    except Exception as e:
+        print("AutoBot forward error:", str(e))
+
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 @app.route("/", methods=["GET"])
@@ -45,7 +75,11 @@ def test():
 
 @app.route("/test_scalping", methods=["GET"])
 def test_scalping():
-    result = send_telegram("✅ Test message from Render to Scalping channel", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID)
+    result = send_telegram(
+        "✅ Test message from Render to Scalping channel",
+        SCALPING_BOT_TOKEN,
+        SCALPING_CHAT_ID
+    )
 
     return {
         "status": "test sent to scalping channel",
@@ -59,11 +93,16 @@ def webhook():
     print("Received 4H data:", data)
 
     message = data.get("message", "No message")
-    result = send_telegram(message, BOT_TOKEN, CHAT_ID)
+
+    telegram_result = send_telegram(message, BOT_TOKEN, CHAT_ID)
+
+    autobot_result = forward_to_autobot(data, AUTOBOT_SWING_URL)
 
     return {
         "status": "ok",
-        "telegram_response": result
+        "strategy": "swing",
+        "telegram_response": telegram_result,
+        "autobot_response": autobot_result
     }
 
 
@@ -73,11 +112,20 @@ def webhook_scalping():
     print("Received scalping data:", data)
 
     message = data.get("message", "No message")
-    result = send_telegram(message, SCALPING_BOT_TOKEN, SCALPING_CHAT_ID)
+
+    telegram_result = send_telegram(
+        message,
+        SCALPING_BOT_TOKEN,
+        SCALPING_CHAT_ID
+    )
+
+    autobot_result = forward_to_autobot(data, AUTOBOT_SCALPING_URL)
 
     return {
         "status": "ok",
-        "telegram_response": result
+        "strategy": "scalping",
+        "telegram_response": telegram_result,
+        "autobot_response": autobot_result
     }
 
 
