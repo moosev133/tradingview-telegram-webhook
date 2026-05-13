@@ -25,6 +25,10 @@ AUTOBOT_SCALPING_URL = os.getenv(
 
 
 def send_telegram(message, bot_token, chat_id):
+    if not bot_token or not chat_id:
+        print("Telegram error: missing BOT_TOKEN or CHAT_ID")
+        return "Missing Telegram bot token or chat id"
+
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
     data = {
@@ -32,19 +36,23 @@ def send_telegram(message, bot_token, chat_id):
         "text": message
     }
 
-    response = requests.post(url, data=data, timeout=10)
-    print("Telegram response:", response.text)
-
-    return response.text
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        print("Telegram response:", response.text)
+        return response.text
+    except Exception as e:
+        print("Telegram send error:", str(e))
+        return str(e)
 
 
 def forward_to_autobot(data, url):
     try:
         response = requests.post(url, json=data, timeout=10)
+        print("AutoBot URL:", url)
         print("AutoBot response:", response.text)
 
         return {
-            "success": True,
+            "success": response.status_code >= 200 and response.status_code < 300,
             "status_code": response.status_code,
             "response": response.text
         }
@@ -84,6 +92,34 @@ def test_scalping():
     return {
         "status": "test sent to scalping channel",
         "telegram_response": result
+    }
+
+
+@app.route("/test_autobot", methods=["GET"])
+def test_autobot():
+    data = {
+        "message": "LONG SIGNAL XAUUSD\nEntry: 4684\nStop Loss: 4678\nTP1: 4688\nTP2: 4691\nTP3: 4694\nTP4: 4697"
+    }
+
+    result = forward_to_autobot(data, AUTOBOT_SWING_URL)
+
+    return {
+        "status": "test sent to AutoBot swing",
+        "autobot_response": result
+    }
+
+
+@app.route("/test_autobot_scalping", methods=["GET"])
+def test_autobot_scalping():
+    data = {
+        "message": "SCALPING SHORT XAUUSD\nEntry: 4680\nStop Loss: 4690\nTP1: 4676\nTP2: 4673\nTP3: 4670\nTP4: 4667\nTP5: Open"
+    }
+
+    result = forward_to_autobot(data, AUTOBOT_SCALPING_URL)
+
+    return {
+        "status": "test sent to AutoBot scalping",
+        "autobot_response": result
     }
 
 
