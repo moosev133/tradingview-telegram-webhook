@@ -2,10 +2,13 @@ from flask import Flask, request
 import requests
 import os
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
 
 load_dotenv()
 
 app = Flask(__name__)
+
+executor = ThreadPoolExecutor(max_workers=10)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -15,12 +18,12 @@ SCALPING_CHAT_ID = os.getenv("SCALPING_CHAT_ID")
 
 AUTOBOT_SWING_URL = os.getenv(
     "AUTOBOT_SWING_URL",
-    "http://184.174.35.98:5050/autobot/webhook"
+    "http://184.174.35.98:5050/webhook"
 )
 
 AUTOBOT_SCALPING_URL = os.getenv(
     "AUTOBOT_SCALPING_URL",
-    "http://184.174.35.98:5050/autobot/webhook_scalping"
+    "http://184.174.35.98:5050/webhook_scalping"
 )
 
 
@@ -37,7 +40,7 @@ def send_telegram(message, bot_token, chat_id):
     }
 
     try:
-        response = requests.post(url, data=data, timeout=10)
+        response = requests.post(url, data=data, timeout=8)
         print("Telegram response:", response.text)
         return response.text
     except Exception as e:
@@ -47,7 +50,7 @@ def send_telegram(message, bot_token, chat_id):
 
 def forward_to_autobot(data, url):
     try:
-        response = requests.post(url, json=data, timeout=10)
+        response = requests.post(url, json=data, timeout=8)
         print("AutoBot URL:", url)
         print("AutoBot response:", response.text)
 
@@ -66,6 +69,20 @@ def forward_to_autobot(data, url):
         }
 
 
+def run_telegram_background(message, bot_token, chat_id):
+    try:
+        send_telegram(message, bot_token, chat_id)
+    except Exception as e:
+        print("Background Telegram error:", str(e))
+
+
+def run_autobot_background(data, url):
+    try:
+        forward_to_autobot(data, url)
+    except Exception as e:
+        print("Background AutoBot error:", str(e))
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "Webhook is running"
@@ -76,7 +93,7 @@ def test():
     result = send_telegram("✅ Test message from Render", BOT_TOKEN, CHAT_ID)
 
     return {
-        "status": "test sent to 4H channel",
+        "status": "test sent to main channel",
         "telegram_response": result
     }
 
@@ -105,6 +122,7 @@ def test_autobot():
 
     return {
         "status": "test sent to AutoBot swing",
+        "autobot_url": AUTOBOT_SWING_URL,
         "autobot_response": result
     }
 
@@ -119,6 +137,7 @@ def test_autobot_scalping():
 
     return {
         "status": "test sent to AutoBot scalping",
+        "autobot_url": AUTOBOT_SCALPING_URL,
         "autobot_response": result
     }
 
@@ -126,20 +145,28 @@ def test_autobot_scalping():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
-    print("Received 4H data:", data)
+    print("Received swing data:", data)
 
     message = data.get("message", "No message")
 
-    telegram_result = send_telegram(message, BOT_TOKEN, CHAT_ID)
+    executor.submit(
+        run_telegram_background,
+        message,
+        BOT_TOKEN,
+        CHAT_ID
+    )
 
-    autobot_result = forward_to_autobot(data, AUTOBOT_SWING_URL)
+    executor.submit(
+        run_autobot_background,
+        data,
+        AUTOBOT_SWING_URL
+    )
 
     return {
-        "status": "ok",
+        "status": "accepted",
         "strategy": "swing",
-        "telegram_response": telegram_result,
-        "autobot_response": autobot_result
-    }
+        "message": "Alert received. Telegram and AutoBot are processing in background."
+    }, 200
 
 
 @app.route("/webhook_scalping", methods=["POST"])
@@ -149,20 +176,66 @@ def webhook_scalping():
 
     message = data.get("message", "No message")
 
-    telegram_result = send_telegram(
+    executor.submit(
+        run_telegram_background,
         message,
         SCALPING_BOT_TOKEN,
         SCALPING_CHAT_ID
     )
 
-    autobot_result = forward_to_autobot(data, AUTOBOT_SCALPING_URL)
+    executor.submit(
+        run_autobot_background,
+        data,
+        AUTOBOT_SCALPING_URL
+    )
 
     return {
-        "status": "ok",
+        "status": "accepted",
         "strategy": "scalping",
-        "telegram_response": telegram_result,
-        "autobot_response": autobot_result
-    }
+        "message": "Alert received. Telegram and AutoBot are processing in background."
+    }, 200
+
+
+@app.route("/webhook_telegram_only", methods=["POST"])
+def webhook_telegram_only():
+    data = request.json or {}
+    print("Received main telegram-only data:", data)
+
+    message = data.get("message", "No message")
+
+    executor.submit(
+        run_telegram_background,
+        message,
+        BOT_TOKEN,
+        CHAT_ID
+    )
+
+    return {
+        "status": "accepted",
+        "strategy": "main_telegram_only",
+        "message": "Alert received. Telegram is processing in background. AutoBot was NOT called."
+    }, 200
+
+
+@app.route("/webhook_scalping_telegram_only", methods=["POST"])
+def webhook_scalping_telegram_only():
+    data = request.json or {}
+    print("Received scalping telegram-only data:", data)
+
+    message = data.get("message", "No message")
+
+    executor.submit(
+        run_telegram_background,
+        message,
+        SCALPING_BOT_TOKEN,
+        SCALPING_CHAT_ID
+    )
+
+    return {
+        "status": "accepted",
+        "strategy": "scalping_telegram_only",
+        "message": "Alert received. Telegram is processing in background. AutoBot was NOT called."
+    }, 200
 
 
 if __name__ == "__main__":
