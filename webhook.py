@@ -16,6 +16,9 @@ CHAT_ID = os.getenv("CHAT_ID")
 SCALPING_BOT_TOKEN = os.getenv("SCALPING_BOT_TOKEN")
 SCALPING_CHAT_ID = os.getenv("SCALPING_CHAT_ID")
 
+LIMIT_ORDER_BOT_TOKEN = os.getenv("LIMIT_ORDER_BOT_TOKEN", SCALPING_BOT_TOKEN)
+LIMIT_ORDER_CHAT_ID = os.getenv("LIMIT_ORDER_CHAT_ID", SCALPING_CHAT_ID)
+
 AUTOBOT_SWING_URL = os.getenv(
     "AUTOBOT_SWING_URL",
     "http://184.174.35.98:5050/webhook"
@@ -24,6 +27,11 @@ AUTOBOT_SWING_URL = os.getenv(
 AUTOBOT_SCALPING_URL = os.getenv(
     "AUTOBOT_SCALPING_URL",
     "http://184.174.35.98:5050/webhook_scalping"
+)
+
+AUTOBOT_LIMIT_ORDER_URL = os.getenv(
+    "AUTOBOT_LIMIT_ORDER_URL",
+    "http://184.174.35.98:5050/webhook_limit_order"
 )
 
 
@@ -43,6 +51,7 @@ def send_telegram(message, bot_token, chat_id):
         response = requests.post(url, data=data, timeout=8)
         print("Telegram response:", response.text)
         return response.text
+
     except Exception as e:
         print("Telegram send error:", str(e))
         return str(e)
@@ -51,6 +60,7 @@ def send_telegram(message, bot_token, chat_id):
 def forward_to_autobot(data, url):
     try:
         response = requests.post(url, json=data, timeout=8)
+
         print("AutoBot URL:", url)
         print("AutoBot response:", response.text)
 
@@ -112,6 +122,20 @@ def test_scalping():
     }
 
 
+@app.route("/test_limit_order", methods=["GET"])
+def test_limit_order():
+    result = send_telegram(
+        "✅ Test message from Render to Limit Order channel",
+        LIMIT_ORDER_BOT_TOKEN,
+        LIMIT_ORDER_CHAT_ID
+    )
+
+    return {
+        "status": "test sent to limit order channel",
+        "telegram_response": result
+    }
+
+
 @app.route("/test_autobot", methods=["GET"])
 def test_autobot():
     data = {
@@ -138,6 +162,21 @@ def test_autobot_scalping():
     return {
         "status": "test sent to AutoBot scalping",
         "autobot_url": AUTOBOT_SCALPING_URL,
+        "autobot_response": result
+    }
+
+
+@app.route("/test_autobot_limit_order", methods=["GET"])
+def test_autobot_limit_order():
+    data = {
+        "message": "BUY LIMIT SETUP\nDetected: 4518.115\n5m Part: 1/5 of 5m candle\nEntry Zone: 4517.000 - 4519.000\nMain Entry: 4519.000"
+    }
+
+    result = forward_to_autobot(data, AUTOBOT_LIMIT_ORDER_URL)
+
+    return {
+        "status": "test sent to AutoBot limit order",
+        "autobot_url": AUTOBOT_LIMIT_ORDER_URL,
         "autobot_response": result
     }
 
@@ -196,6 +235,33 @@ def webhook_scalping():
     }, 200
 
 
+@app.route("/webhook_limit_order", methods=["POST"])
+def webhook_limit_order():
+    data = request.json or {}
+    print("Received limit-order data:", data)
+
+    message = data.get("message", "No message")
+
+    executor.submit(
+        run_telegram_background,
+        message,
+        LIMIT_ORDER_BOT_TOKEN,
+        LIMIT_ORDER_CHAT_ID
+    )
+
+    executor.submit(
+        run_autobot_background,
+        data,
+        AUTOBOT_LIMIT_ORDER_URL
+    )
+
+    return {
+        "status": "accepted",
+        "strategy": "limit_order",
+        "message": "Limit-order alert received. Telegram and AutoBot are processing in background."
+    }, 200
+
+
 @app.route("/webhook_telegram_only", methods=["POST"])
 def webhook_telegram_only():
     data = request.json or {}
@@ -234,6 +300,27 @@ def webhook_scalping_telegram_only():
     return {
         "status": "accepted",
         "strategy": "scalping_telegram_only",
+        "message": "Alert received. Telegram is processing in background. AutoBot was NOT called."
+    }, 200
+
+
+@app.route("/webhook_limit_order_telegram_only", methods=["POST"])
+def webhook_limit_order_telegram_only():
+    data = request.json or {}
+    print("Received limit-order telegram-only data:", data)
+
+    message = data.get("message", "No message")
+
+    executor.submit(
+        run_telegram_background,
+        message,
+        LIMIT_ORDER_BOT_TOKEN,
+        LIMIT_ORDER_CHAT_ID
+    )
+
+    return {
+        "status": "accepted",
+        "strategy": "limit_order_telegram_only",
         "message": "Alert received. Telegram is processing in background. AutoBot was NOT called."
     }, 200
 
