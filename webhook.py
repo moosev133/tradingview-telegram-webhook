@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 load_dotenv()
 
 app = Flask(__name__)
-
 executor = ThreadPoolExecutor(max_workers=10)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -19,39 +18,27 @@ SCALPING_CHAT_ID = os.getenv("SCALPING_CHAT_ID")
 LIMIT_ORDER_BOT_TOKEN = os.getenv("LIMIT_ORDER_BOT_TOKEN", SCALPING_BOT_TOKEN)
 LIMIT_ORDER_CHAT_ID = os.getenv("LIMIT_ORDER_CHAT_ID", SCALPING_CHAT_ID)
 
-AUTOBOT_SWING_URL = os.getenv(
-    "AUTOBOT_SWING_URL",
-    "http://184.174.35.98:5050/webhook"
-)
+AUTOBOT_BASE = os.getenv("AUTOBOT_BASE", "http://184.174.35.98:5050")
 
-AUTOBOT_SCALPING_URL = os.getenv(
-    "AUTOBOT_SCALPING_URL",
-    "http://184.174.35.98:5050/webhook_scalping"
-)
-
-AUTOBOT_LIMIT_ORDER_URL = os.getenv(
-    "AUTOBOT_LIMIT_ORDER_URL",
-    "http://184.174.35.98:5050/webhook_limit_order"
-)
+AUTOBOT_SWING_URL = os.getenv("AUTOBOT_SWING_URL", AUTOBOT_BASE + "/webhook")
+AUTOBOT_PD_SCALP_URL = os.getenv("AUTOBOT_PD_SCALP_URL", AUTOBOT_BASE + "/webhook_pd_scalp")
+AUTOBOT_LIMIT_ORDER_URL = os.getenv("AUTOBOT_LIMIT_ORDER_URL", AUTOBOT_BASE + "/webhook_limit_order")
+AUTOBOT_EMA_SCALPING_URL = os.getenv("AUTOBOT_EMA_SCALPING_URL", AUTOBOT_BASE + "/webhook_ema_scalping")
+AUTOBOT_EQ_REJECTION_URL = os.getenv("AUTOBOT_EQ_REJECTION_URL", AUTOBOT_BASE + "/webhook_eq_rejection")
 
 
 def send_telegram(message, bot_token, chat_id):
     if not bot_token or not chat_id:
-        print("Telegram error: missing BOT_TOKEN or CHAT_ID")
+        print("Telegram error: missing token/chat id")
         return "Missing Telegram bot token or chat id"
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-
-    data = {
-        "chat_id": chat_id,
-        "text": message
-    }
+    data = {"chat_id": chat_id, "text": message}
 
     try:
         response = requests.post(url, data=data, timeout=8)
         print("Telegram response:", response.text)
         return response.text
-
     except Exception as e:
         print("Telegram send error:", str(e))
         return str(e)
@@ -60,23 +47,17 @@ def send_telegram(message, bot_token, chat_id):
 def forward_to_autobot(data, url):
     try:
         response = requests.post(url, json=data, timeout=8)
-
         print("AutoBot URL:", url)
         print("AutoBot response:", response.text)
 
         return {
-            "success": response.status_code >= 200 and response.status_code < 300,
+            "success": 200 <= response.status_code < 300,
             "status_code": response.status_code,
             "response": response.text
         }
-
     except Exception as e:
         print("AutoBot forward error:", str(e))
-
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
 
 
 def run_telegram_background(message, bot_token, chat_id):
@@ -93,236 +74,114 @@ def run_autobot_background(data, url):
         print("Background AutoBot error:", str(e))
 
 
+def process_strategy(data, strategy_name, bot_token, chat_id, autobot_url, telegram_only=False):
+    message = data.get("message", "No message")
+
+    executor.submit(run_telegram_background, message, bot_token, chat_id)
+
+    if not telegram_only:
+        executor.submit(run_autobot_background, data, autobot_url)
+
+    return {
+        "status": "accepted",
+        "strategy": strategy_name,
+        "telegram_only": telegram_only,
+        "autobot_url": None if telegram_only else autobot_url,
+        "message": "Alert received and processing in background."
+    }, 200
+
+
 @app.route("/", methods=["GET"])
 def home():
-    return "Webhook is running"
-
-
-@app.route("/test", methods=["GET"])
-def test():
-    result = send_telegram("✅ Test message from Render", BOT_TOKEN, CHAT_ID)
-
     return {
-        "status": "test sent to main channel",
-        "telegram_response": result
-    }
-
-
-@app.route("/test_scalping", methods=["GET"])
-def test_scalping():
-    result = send_telegram(
-        "✅ Test message from Render to Scalping channel",
-        SCALPING_BOT_TOKEN,
-        SCALPING_CHAT_ID
-    )
-
-    return {
-        "status": "test sent to scalping channel",
-        "telegram_response": result
-    }
-
-
-@app.route("/test_limit_order", methods=["GET"])
-def test_limit_order():
-    result = send_telegram(
-        "✅ Test message from Render to Limit Order channel",
-        LIMIT_ORDER_BOT_TOKEN,
-        LIMIT_ORDER_CHAT_ID
-    )
-
-    return {
-        "status": "test sent to limit order channel",
-        "telegram_response": result
-    }
-
-
-@app.route("/test_autobot", methods=["GET"])
-def test_autobot():
-    data = {
-        "message": "LONG SIGNAL XAUUSD\nEntry: 4684\nStop Loss: 4678\nTP1: 4688\nTP2: 4691\nTP3: 4694\nTP4: 4697"
-    }
-
-    result = forward_to_autobot(data, AUTOBOT_SWING_URL)
-
-    return {
-        "status": "test sent to AutoBot swing",
-        "autobot_url": AUTOBOT_SWING_URL,
-        "autobot_response": result
-    }
-
-
-@app.route("/test_autobot_scalping", methods=["GET"])
-def test_autobot_scalping():
-    data = {
-        "message": "SCALPING SHORT XAUUSD\nEntry: 4680\nStop Loss: 4690\nTP1: 4676\nTP2: 4673\nTP3: 4670\nTP4: 4667\nTP5: Open"
-    }
-
-    result = forward_to_autobot(data, AUTOBOT_SCALPING_URL)
-
-    return {
-        "status": "test sent to AutoBot scalping",
-        "autobot_url": AUTOBOT_SCALPING_URL,
-        "autobot_response": result
-    }
-
-
-@app.route("/test_autobot_limit_order", methods=["GET"])
-def test_autobot_limit_order():
-    data = {
-        "message": "BUY LIMIT SETUP\nDetected: 4518.115\n5m Part: 1/5 of 5m candle\nEntry Zone: 4517.000 - 4519.000\nMain Entry: 4519.000"
-    }
-
-    result = forward_to_autobot(data, AUTOBOT_LIMIT_ORDER_URL)
-
-    return {
-        "status": "test sent to AutoBot limit order",
-        "autobot_url": AUTOBOT_LIMIT_ORDER_URL,
-        "autobot_response": result
+        "status": "Webhook is running",
+        "routes": {
+            "strategy_1_swing": "/webhook_swing",
+            "strategy_2_pd_scalp": "/webhook_pd_scalp",
+            "strategy_3_limit_order": "/webhook_limit_order",
+            "strategy_4_ema_scalping": "/webhook_ema_scalping",
+            "strategy_5_eq_rejection": "/webhook_eq_rejection"
+        }
     }
 
 
 @app.route("/webhook", methods=["POST"])
-def webhook():
+@app.route("/webhook_swing", methods=["POST"])
+def webhook_swing():
     data = request.json or {}
-    print("Received swing data:", data)
-
-    message = data.get("message", "No message")
-
-    executor.submit(
-        run_telegram_background,
-        message,
-        BOT_TOKEN,
-        CHAT_ID
-    )
-
-    executor.submit(
-        run_autobot_background,
-        data,
-        AUTOBOT_SWING_URL
-    )
-
-    return {
-        "status": "accepted",
-        "strategy": "swing",
-        "message": "Alert received. Telegram and AutoBot are processing in background."
-    }, 200
+    print("Received STRATEGY 1 swing data:", data)
+    return process_strategy(data, "strategy_1_swing_4h_box_v7", BOT_TOKEN, CHAT_ID, AUTOBOT_SWING_URL)
 
 
-@app.route("/webhook_scalping", methods=["POST"])
-def webhook_scalping():
+@app.route("/webhook_pd_scalp", methods=["POST"])
+def webhook_pd_scalp():
     data = request.json or {}
-    print("Received scalping data:", data)
-
-    message = data.get("message", "No message")
-
-    executor.submit(
-        run_telegram_background,
-        message,
-        SCALPING_BOT_TOKEN,
-        SCALPING_CHAT_ID
-    )
-
-    executor.submit(
-        run_autobot_background,
-        data,
-        AUTOBOT_SCALPING_URL
-    )
-
-    return {
-        "status": "accepted",
-        "strategy": "scalping",
-        "message": "Alert received. Telegram and AutoBot are processing in background."
-    }, 200
+    print("Received STRATEGY 2 PD scalp data:", data)
+    return process_strategy(data, "strategy_2_pd_early_confirmed_scalp", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID, AUTOBOT_PD_SCALP_URL)
 
 
 @app.route("/webhook_limit_order", methods=["POST"])
 def webhook_limit_order():
     data = request.json or {}
-    print("Received limit-order data:", data)
-
-    message = data.get("message", "No message")
-
-    executor.submit(
-        run_telegram_background,
-        message,
-        LIMIT_ORDER_BOT_TOKEN,
-        LIMIT_ORDER_CHAT_ID
-    )
-
-    executor.submit(
-        run_autobot_background,
-        data,
-        AUTOBOT_LIMIT_ORDER_URL
-    )
-
-    return {
-        "status": "accepted",
-        "strategy": "limit_order",
-        "message": "Limit-order alert received. Telegram and AutoBot are processing in background."
-    }, 200
+    print("Received STRATEGY 3 limit order data:", data)
+    return process_strategy(data, "strategy_3_pd_predictive_limit_order", LIMIT_ORDER_BOT_TOKEN, LIMIT_ORDER_CHAT_ID, AUTOBOT_LIMIT_ORDER_URL)
 
 
-@app.route("/webhook_telegram_only", methods=["POST"])
-def webhook_telegram_only():
+@app.route("/webhook_ema_scalping", methods=["POST"])
+def webhook_ema_scalping():
     data = request.json or {}
-    print("Received main telegram-only data:", data)
-
-    message = data.get("message", "No message")
-
-    executor.submit(
-        run_telegram_background,
-        message,
-        BOT_TOKEN,
-        CHAT_ID
-    )
-
-    return {
-        "status": "accepted",
-        "strategy": "main_telegram_only",
-        "message": "Alert received. Telegram is processing in background. AutoBot was NOT called."
-    }, 200
+    print("Received STRATEGY 4 EMA scalping data:", data)
+    return process_strategy(data, "strategy_4_ema_scalping", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID, AUTOBOT_EMA_SCALPING_URL)
 
 
-@app.route("/webhook_scalping_telegram_only", methods=["POST"])
-def webhook_scalping_telegram_only():
+@app.route("/webhook_eq_rejection", methods=["POST"])
+def webhook_eq_rejection():
     data = request.json or {}
-    print("Received scalping telegram-only data:", data)
+    print("Received STRATEGY 5 EQ rejection data:", data)
+    return process_strategy(data, "strategy_5_4h_eq_rejection", BOT_TOKEN, CHAT_ID, AUTOBOT_EQ_REJECTION_URL)
 
-    message = data.get("message", "No message")
 
-    executor.submit(
-        run_telegram_background,
-        message,
-        SCALPING_BOT_TOKEN,
-        SCALPING_CHAT_ID
-    )
+@app.route("/webhook_swing_telegram_only", methods=["POST"])
+def webhook_swing_telegram_only():
+    data = request.json or {}
+    return process_strategy(data, "strategy_1_swing_telegram_only", BOT_TOKEN, CHAT_ID, AUTOBOT_SWING_URL, True)
 
-    return {
-        "status": "accepted",
-        "strategy": "scalping_telegram_only",
-        "message": "Alert received. Telegram is processing in background. AutoBot was NOT called."
-    }, 200
+
+@app.route("/webhook_pd_scalp_telegram_only", methods=["POST"])
+def webhook_pd_scalp_telegram_only():
+    data = request.json or {}
+    return process_strategy(data, "strategy_2_pd_scalp_telegram_only", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID, AUTOBOT_PD_SCALP_URL, True)
 
 
 @app.route("/webhook_limit_order_telegram_only", methods=["POST"])
 def webhook_limit_order_telegram_only():
     data = request.json or {}
-    print("Received limit-order telegram-only data:", data)
+    return process_strategy(data, "strategy_3_limit_order_telegram_only", LIMIT_ORDER_BOT_TOKEN, LIMIT_ORDER_CHAT_ID, AUTOBOT_LIMIT_ORDER_URL, True)
 
-    message = data.get("message", "No message")
 
-    executor.submit(
-        run_telegram_background,
-        message,
-        LIMIT_ORDER_BOT_TOKEN,
-        LIMIT_ORDER_CHAT_ID
-    )
+@app.route("/webhook_ema_scalping_telegram_only", methods=["POST"])
+def webhook_ema_scalping_telegram_only():
+    data = request.json or {}
+    return process_strategy(data, "strategy_4_ema_scalping_telegram_only", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID, AUTOBOT_EMA_SCALPING_URL, True)
 
-    return {
-        "status": "accepted",
-        "strategy": "limit_order_telegram_only",
-        "message": "Alert received. Telegram is processing in background. AutoBot was NOT called."
-    }, 200
+
+@app.route("/webhook_eq_rejection_telegram_only", methods=["POST"])
+def webhook_eq_rejection_telegram_only():
+    data = request.json or {}
+    return process_strategy(data, "strategy_5_eq_rejection_telegram_only", BOT_TOKEN, CHAT_ID, AUTOBOT_EQ_REJECTION_URL, True)
+
+
+@app.route("/test_all", methods=["GET"])
+def test_all():
+    tests = {
+        "swing": send_telegram("✅ Test Strategy 1 Swing", BOT_TOKEN, CHAT_ID),
+        "pd_scalp": send_telegram("✅ Test Strategy 2 PD Scalp", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID),
+        "limit_order": send_telegram("✅ Test Strategy 3 Limit Order", LIMIT_ORDER_BOT_TOKEN, LIMIT_ORDER_CHAT_ID),
+        "ema_scalping": send_telegram("✅ Test Strategy 4 EMA Scalping", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID),
+        "eq_rejection": send_telegram("✅ Test Strategy 5 EQ Rejection", BOT_TOKEN, CHAT_ID)
+    }
+
+    return {"status": "tests sent", "results": tests}
 
 
 if __name__ == "__main__":
