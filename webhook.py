@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import requests
 import os
 from dotenv import load_dotenv
@@ -7,42 +7,57 @@ from concurrent.futures import ThreadPoolExecutor
 load_dotenv()
 
 app = Flask(__name__)
-executor = ThreadPoolExecutor(max_workers=10)
+
+# Background workers.
+# TradingView must receive HTTP 200 fast, so Telegram + AutoBot forwarding run in background.
+executor = ThreadPoolExecutor(max_workers=20)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-SCALPING_BOT_TOKEN = os.getenv("SCALPING_BOT_TOKEN")
-SCALPING_CHAT_ID = os.getenv("SCALPING_CHAT_ID")
-
-LIMIT_ORDER_BOT_TOKEN = os.getenv("LIMIT_ORDER_BOT_TOKEN", SCALPING_BOT_TOKEN)
-LIMIT_ORDER_CHAT_ID = os.getenv("LIMIT_ORDER_CHAT_ID", SCALPING_CHAT_ID)
-
-EDGE_BOT_TOKEN = os.getenv("EDGE_BOT_TOKEN", SCALPING_BOT_TOKEN)
-EDGE_CHAT_ID = os.getenv("EDGE_CHAT_ID", SCALPING_CHAT_ID)
+EDGE_BOT_TOKEN = os.getenv("EDGE_BOT_TOKEN", BOT_TOKEN)
+EDGE_CHAT_ID = os.getenv("EDGE_CHAT_ID", CHAT_ID)
 
 AUTOBOT_BASE = os.getenv("AUTOBOT_BASE", "http://184.174.35.98:5050")
 
-AUTOBOT_SWING_URL = os.getenv("AUTOBOT_SWING_URL", AUTOBOT_BASE + "/webhook")
-AUTOBOT_PD_SCALP_URL = os.getenv("AUTOBOT_PD_SCALP_URL", AUTOBOT_BASE + "/webhook_pd_scalp")
-AUTOBOT_LIMIT_ORDER_URL = os.getenv("AUTOBOT_LIMIT_ORDER_URL", AUTOBOT_BASE + "/webhook_limit_order")
-AUTOBOT_EMA_SCALPING_URL = os.getenv("AUTOBOT_EMA_SCALPING_URL", AUTOBOT_BASE + "/webhook_ema_scalping")
+# Active AutoBot URLs only.
+AUTOBOT_SWING_URL = os.getenv("AUTOBOT_SWING_URL", AUTOBOT_BASE + "/webhook_swing")
 AUTOBOT_EQ_REJECTION_URL = os.getenv("AUTOBOT_EQ_REJECTION_URL", AUTOBOT_BASE + "/webhook_eq_rejection")
-
 AUTOBOT_EDGE_ALGO_URL = os.getenv("AUTOBOT_EDGE_ALGO_URL", AUTOBOT_BASE + "/webhook_edge_algo")
+
+VALID_EDGE_TIMEFRAMES = ["5m", "15m"]
+
+
+def normalize_timeframe(value):
+    tf = str(value or "").strip().lower()
+    tf = tf.replace("minutes", "m").replace("minute", "m").replace("mins", "m").replace("min", "m")
+
+    if tf in ["5", "5m", "m5"]:
+        return "5m"
+
+    if tf in ["15", "15m", "m15"]:
+        return "15m"
+
+    if tf in ["1", "1m", "m1"]:
+        return "1m"
+
+    return tf
 
 
 def send_telegram(message, bot_token, chat_id):
     if not bot_token or not chat_id:
-        print("Telegram error: missing token/chat id")
+        print("Telegram skipped: missing token/chat id")
         return "Missing Telegram bot token or chat id"
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    data = {"chat_id": chat_id, "text": message}
+    data = {
+        "chat_id": chat_id,
+        "text": message
+    }
 
     try:
-        response = requests.post(url, data=data, timeout=8)
-        print("Telegram response:", response.text)
+        response = requests.post(url, data=data, timeout=4)
+        print("Telegram response:", response.status_code, response.text[:500])
         return response.text
     except Exception as e:
         print("Telegram send error:", str(e))
@@ -51,9 +66,9 @@ def send_telegram(message, bot_token, chat_id):
 
 def forward_to_autobot(data, url):
     try:
-        response = requests.post(url, json=data, timeout=8)
+        response = requests.post(url, json=data, timeout=4)
         print("AutoBot URL:", url)
-        print("AutoBot response:", response.text)
+        print("AutoBot response:", response.status_code, response.text[:500])
 
         return {
             "success": 200 <= response.status_code < 300,
@@ -62,7 +77,10 @@ def forward_to_autobot(data, url):
         }
     except Exception as e:
         print("AutoBot forward error:", str(e))
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 def run_telegram_background(message, bot_token, chat_id):
@@ -82,101 +100,144 @@ def run_autobot_background(data, url):
 def process_strategy(data, strategy_name, bot_token, chat_id, autobot_url, telegram_only=False):
     message = data.get("message", "No message")
 
+    # Background only. Never block TradingView.
     executor.submit(run_telegram_background, message, bot_token, chat_id)
 
     if not telegram_only:
         executor.submit(run_autobot_background, data, autobot_url)
 
-    return {
+    return jsonify({
         "status": "accepted",
         "strategy": strategy_name,
         "telegram_only": telegram_only,
         "autobot_url": None if telegram_only else autobot_url,
-        "message": "Alert received and processing in background."
-    }, 200
+        "message": "Alert received instantly. Processing in background."
+    }), 200
 
 
 def process_edge_algo(symbol, timeframe):
-    data = request.json or {}
+    timeframe = normalize_timeframe(timeframe)
+
+    if timeframe not in VALID_EDGE_TIMEFRAMES:
+        # Still answer fast, but reject unsupported 1m.
+        return jsonify({
+            "status": "rejected",
+            "strategy": "edge_algo",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "message": "Edge Algo 1m removed. Only 5m and 15m are supported."
+        }), 200
+
+    data = request.get_json(silent=True) or {}
 
     data["bot"] = "edge_algo"
     data["symbol"] = symbol
     data["timeframe"] = timeframe
 
     original_message = data.get("message", "No message")
-    data["message"] = f"⚡ Edge Algo | {symbol} | {timeframe}\n{original_message}"
+    data["message"] = f"⚡ Edge Algo | {symbol} | {timeframe}\\n{original_message}"
 
     print(f"Received EDGE ALGO data: {symbol} {timeframe}", data)
 
     return process_strategy(
-        data,
-        f"edge_algo_{symbol.lower()}_{timeframe}",
-        EDGE_BOT_TOKEN,
-        EDGE_CHAT_ID,
-        AUTOBOT_EDGE_ALGO_URL
+        data=data,
+        strategy_name=f"edge_algo_{symbol.lower()}_{timeframe}",
+        bot_token=EDGE_BOT_TOKEN,
+        chat_id=EDGE_CHAT_ID,
+        autobot_url=AUTOBOT_EDGE_ALGO_URL
     )
 
 
 @app.route("/", methods=["GET"])
 def home():
-    return {
+    return jsonify({
         "status": "Webhook is running",
+        "active_bots": ["swing", "eq_rejection", "edge_algo"],
         "routes": {
-            "strategy_1_swing": "/webhook_swing",
-            "strategy_2_pd_scalp": "/webhook_pd_scalp",
-            "strategy_3_limit_order": "/webhook_limit_order",
-            "strategy_4_ema_scalping": "/webhook_ema_scalping",
-            "strategy_5_eq_rejection": "/webhook_eq_rejection",
-
-            "edge_xauusd_1m": "/webhook_edge_xauusd_1m",
+            "swing": "/webhook_swing",
+            "eq_rejection": "/webhook_eq_rejection",
             "edge_xauusd_5m": "/webhook_edge_xauusd_5m",
             "edge_xauusd_15m": "/webhook_edge_xauusd_15m",
-            "edge_btc_1m": "/webhook_edge_btc_1m",
             "edge_btc_5m": "/webhook_edge_btc_5m",
             "edge_btc_15m": "/webhook_edge_btc_15m"
         }
-    }
+    })
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "ok",
+        "message": "Render webhook is healthy"
+    })
 
 
 @app.route("/webhook", methods=["POST"])
 @app.route("/webhook_swing", methods=["POST"])
 def webhook_swing():
-    data = request.json or {}
-    print("Received STRATEGY 1 swing data:", data)
-    return process_strategy(data, "strategy_1_swing_4h_box_v7", BOT_TOKEN, CHAT_ID, AUTOBOT_SWING_URL)
-
-
-@app.route("/webhook_pd_scalp", methods=["POST"])
-def webhook_pd_scalp():
-    data = request.json or {}
-    print("Received STRATEGY 2 PD scalp data:", data)
-    return process_strategy(data, "strategy_2_pd_early_confirmed_scalp", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID, AUTOBOT_PD_SCALP_URL)
-
-
-@app.route("/webhook_limit_order", methods=["POST"])
-def webhook_limit_order():
-    data = request.json or {}
-    print("Received STRATEGY 3 limit order data:", data)
-    return process_strategy(data, "strategy_3_pd_predictive_limit_order", LIMIT_ORDER_BOT_TOKEN, LIMIT_ORDER_CHAT_ID, AUTOBOT_LIMIT_ORDER_URL)
-
-
-@app.route("/webhook_ema_scalping", methods=["POST"])
-def webhook_ema_scalping():
-    data = request.json or {}
-    print("Received STRATEGY 4 EMA scalping data:", data)
-    return process_strategy(data, "strategy_4_ema_scalping", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID, AUTOBOT_EMA_SCALPING_URL)
+    data = request.get_json(silent=True) or {}
+    print("Received SWING data:", data)
+    return process_strategy(
+        data=data,
+        strategy_name="swing",
+        bot_token=BOT_TOKEN,
+        chat_id=CHAT_ID,
+        autobot_url=AUTOBOT_SWING_URL
+    )
 
 
 @app.route("/webhook_eq_rejection", methods=["POST"])
 def webhook_eq_rejection():
-    data = request.json or {}
-    print("Received STRATEGY 5 EQ rejection data:", data)
-    return process_strategy(data, "strategy_5_4h_eq_rejection", BOT_TOKEN, CHAT_ID, AUTOBOT_EQ_REJECTION_URL)
+    data = request.get_json(silent=True) or {}
+    print("Received EQ REJECTION data:", data)
+    return process_strategy(
+        data=data,
+        strategy_name="eq_rejection",
+        bot_token=BOT_TOKEN,
+        chat_id=CHAT_ID,
+        autobot_url=AUTOBOT_EQ_REJECTION_URL
+    )
 
 
-@app.route("/webhook_edge_xauusd_1m", methods=["POST"])
-def webhook_edge_xauusd_1m():
-    return process_edge_algo("XAUUSD", "1m")
+@app.route("/webhook_edge_algo", methods=["POST"])
+def webhook_edge_algo():
+    data = request.get_json(silent=True) or {}
+
+    symbol = str(data.get("symbol", "XAUUSD")).upper().strip()
+    timeframe = normalize_timeframe(data.get("timeframe") or data.get("tf") or data.get("interval"))
+
+    if not timeframe:
+        return jsonify({
+            "status": "rejected",
+            "strategy": "edge_algo",
+            "message": "Missing timeframe. Edge Algo supports only 5m and 15m."
+        }), 200
+
+    if timeframe not in VALID_EDGE_TIMEFRAMES:
+        return jsonify({
+            "status": "rejected",
+            "strategy": "edge_algo",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "message": "Edge Algo 1m removed. Only 5m and 15m are supported."
+        }), 200
+
+    data["bot"] = "edge_algo"
+    data["symbol"] = symbol
+    data["timeframe"] = timeframe
+
+    message = data.get("message", "No message")
+    data["message"] = f"⚡ Edge Algo | {symbol} | {timeframe}\\n{message}"
+
+    print("Received EDGE ALGO generic data:", data)
+
+    return process_strategy(
+        data=data,
+        strategy_name=f"edge_algo_{symbol.lower()}_{timeframe}",
+        bot_token=EDGE_BOT_TOKEN,
+        chat_id=EDGE_CHAT_ID,
+        autobot_url=AUTOBOT_EDGE_ALGO_URL
+    )
 
 
 @app.route("/webhook_edge_xauusd_5m", methods=["POST"])
@@ -189,11 +250,6 @@ def webhook_edge_xauusd_15m():
     return process_edge_algo("XAUUSD", "15m")
 
 
-@app.route("/webhook_edge_btc_1m", methods=["POST"])
-def webhook_edge_btc_1m():
-    return process_edge_algo("BTCUSD", "1m")
-
-
 @app.route("/webhook_edge_btc_5m", methods=["POST"])
 def webhook_edge_btc_5m():
     return process_edge_algo("BTCUSD", "5m")
@@ -204,18 +260,33 @@ def webhook_edge_btc_15m():
     return process_edge_algo("BTCUSD", "15m")
 
 
+# Old removed routes.
+# Keep them so TradingView does not timeout if an old alert still uses them.
+# They return fast but do NOT forward to AutoBot.
+@app.route("/webhook_pd_scalp", methods=["POST"])
+@app.route("/webhook_limit_order", methods=["POST"])
+@app.route("/webhook_ema_scalping", methods=["POST"])
+@app.route("/webhook_edge_xauusd_1m", methods=["POST"])
+@app.route("/webhook_edge_btc_1m", methods=["POST"])
+def removed_routes():
+    return jsonify({
+        "status": "rejected",
+        "message": "This route was removed. Active bots: swing, eq_rejection, edge_algo 5m/15m only."
+    }), 200
+
+
 @app.route("/test_all", methods=["GET"])
 def test_all():
     tests = {
-        "swing": send_telegram("✅ Test Strategy 1 Swing", BOT_TOKEN, CHAT_ID),
-        "pd_scalp": send_telegram("✅ Test Strategy 2 PD Scalp", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID),
-        "limit_order": send_telegram("✅ Test Strategy 3 Limit Order", LIMIT_ORDER_BOT_TOKEN, LIMIT_ORDER_CHAT_ID),
-        "ema_scalping": send_telegram("✅ Test Strategy 4 EMA Scalping", SCALPING_BOT_TOKEN, SCALPING_CHAT_ID),
-        "eq_rejection": send_telegram("✅ Test Strategy 5 EQ Rejection", BOT_TOKEN, CHAT_ID),
+        "swing": send_telegram("✅ Test Swing Bot", BOT_TOKEN, CHAT_ID),
+        "eq_rejection": send_telegram("✅ Test EQ Rejection Bot", BOT_TOKEN, CHAT_ID),
         "edge_algo": send_telegram("✅ Test Edge Algo", EDGE_BOT_TOKEN, EDGE_CHAT_ID)
     }
 
-    return {"status": "tests sent", "results": tests}
+    return jsonify({
+        "status": "tests sent",
+        "results": tests
+    })
 
 
 if __name__ == "__main__":
